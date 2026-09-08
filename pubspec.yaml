@@ -1,0 +1,68 @@
+name: poc_ohos
+description: "Toki (xiangjugong) v1.49.1 HarmonyOS alpha — Flutter-OH 3.44.9 port mirror of D:\\Projects\\xiangjugong."
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI: 纯 Miuix 组件(与主项目同版,零降级)
+  flutter_miuix: ^1.1.1
+  flutter_riverpod: ^3.4.2
+  # go_router 18 依赖官方解耦包 cupertino_ui/material_ui(与 OH fork 内置 Material + ohos 枚举不兼容)
+  # → OH 镜像降 17.5.0;路由表差异由 analyze 验证。登记 DEP_MATRIX。
+  go_router: 17.5.0
+  shared_preferences: ^2.5.5
+  device_info_plus: ^13.2.0
+  excel_plus: ^2.17.0
+  file_picker: ^12.1.3
+  url_launcher: ^6.3.2
+  http: ^1.5.0
+  # secure_storage 保持 10.0.0(与主项目一致,win32 ^6 世界自洽)。
+  # flutter_secure_storage_ohos 弃用:其 platform_interface ^1 与主包 10(^2)死锁;token 存储 P2 自实现。登记。
+  flutter_secure_storage: 10.0.0
+  # 流程图编辑器内核(v1.46+,与主项目同 vendor)
+  vyuh_node_flow: ^0.32.0
+  flutter_mobx: ^2.3.0
+
+  # ── OHOS 平台实现(federated plugin 追加端,生态包)──
+  shared_preferences_ohos: ^2.2.0
+  path_provider_ohos: ^2.2.1
+  url_launcher_ohos: ^6.3.0
+  # ── 自研通道插件(S1:media/log/refresh + reminder 占位)──
+  xiangjugong_ohos:
+    path: plugins/xiangjugong_ohos
+
+# 本地 vendor 覆盖(与主项目一致:third_party/vyuh_node_flow)
+dependency_overrides:
+  vyuh_node_flow:
+    path: third_party/vyuh_node_flow
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  shaders:
+    - shaders/lens_refraction.frag
+    - shaders/bloom_dual_peak.frag
+    - shaders/miuix_bloom_stroke.frag
+
+  assets:
+    - assets/tools/tools.json
+    - assets/images/app_icon.png
+    # LTPO 帧率投票开关(仅 OH 引擎读取,flutter_assets 根):
+    #   SWITCH 0 = 关闭应用投票,刷新率完全跟随系统设置。Android/Web 忽略。
+    - framesconfig.json
+
+  # v1.50.0(鸿蒙字体):**不注册本地字体** → 引擎请求 'Roboto' 未命中 →
+  #   fallback 系统默认 = HarmonyOS Sans(鸿蒙原生字体,与系统界面一致)。
+  #   (主工程 Android/Web 保留 Noto Sans SC 本地注册 —— v1.49.1 Web 远程问题。)

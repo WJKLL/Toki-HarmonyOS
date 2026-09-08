@@ -1,0 +1,13 @@
+name: xiangjugong_ohos
+description: "Toki self-owned OHOS MethodChannel implementations (media/log/refresh/reminder) — port of the Android MainActivity channels."
+version: 0.1.0
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.0.0"
+
+flutter:
+  plugin:
+    platforms:
+      ohos:
+        package: com.xiangjugong.ohos
+        pluginClass: XiangJuGongChannelsPlugin

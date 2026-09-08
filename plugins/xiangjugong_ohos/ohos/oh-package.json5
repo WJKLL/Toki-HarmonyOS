@@ -1,0 +1,11 @@
+{
+  "name": "xiangjugong_ohos",
+  "version": "1.0.0",
+  "description": "Toki OHOS channels plugin",
+  "main": "index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@ohos/flutter_ohos": "file:libs/flutter.har",
+  }
+}

@@ -1,0 +1,13 @@
+# 本地构建物与依赖(不随源码)
+build/
+ohos/build/
+ohos/oh_modules/
+ohos/node_modules/
+ohos/.hvigor/
+ohos/.idea/
+ohos/entry/src/main/rawfile/flutter_assets/
+ohos/entry/libs/
+.dart_tool/
+*.log
+# 本地环境(绝对路径,随机器)
+ohos/local.properties
