@@ -17,6 +17,14 @@
 
 ## 更新日志
 
+### v1.50.3 · 2026-09-09
+**应用更名「百工箱」+ 包名正式化（备案）**
+- 原「Toki」在阿里云 App 备案未通过,按项目定位(Miuix 风格生活/换算工具箱)更名为**「百工箱」** —— 中文、简短、直白,含「工」呼应包名 `xiangjugong`。
+- 全端显示名统一:Android `android:label` / 鸿蒙 `AppScope` `app_name` + `EntryAbility_label`(base/zh_CN/en_US) / Web `<title>` + `manifest.json` / `AppConstants.appName`。
+- **鸿蒙 bundleName 正式化**:`com.example.poc_ohos`(模板占位,阿里云必拒)→ `com.xiangjugong.xiangjugong`(与 Android 一致)。已装 HAP 需卸载重装。
+- 备案身份信息(供阿里云 App 备案):Android 公钥/MD5、鸿蒙公钥/MD5、包名、域名 omjl.top —— 均从 keystore / 证书提取并核对。
+- 版本:`1.50.1+157` → `1.50.3+160`(大版本与主项目同步)。
+
 ### v1.50.1 · 2026-09-09
 **滚动期禁卡片按压光圈(GLOW-04)**
 - 修复**首页纵向滚动掉帧**:`GlowMaterial` 的 `Listener.onPointerDown` 不参与手势竞技场 —— 手指按在卡片上**直接开始滑动**时,按下瞬间卡片仍会跑 180ms 按压光圈动画(每帧 `setState` 重绘整卡,含 `CardShadow` 双层阴影模糊),松手再 260ms 反向回收;滚动起始因此必然掉帧,而滚动场景本不该有按压反馈。
