@@ -2,7 +2,7 @@ name: poc_ohos
 description: "Toki (xiangjugong) HarmonyOS NEXT port — Flutter-OH 3.44.9 mirror of D:\\Projects\\xiangjugong."
 publish_to: 'none'
 
-version: 1.49.1+153
+version: 1.49.2+154
 
 environment:
   sdk: ^3.12.2
