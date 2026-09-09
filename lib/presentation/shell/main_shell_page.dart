@@ -32,6 +32,7 @@ import '../../core/utils/u03_blur_policy.dart';
 import '../../core/utils/u04_platform_utils.dart';
 import '../../core/widgets/app_icons.dart';
 import '../../core/widgets/c15_page_scale_container.dart';
+import '../../core/widgets/glow_material.dart';
 import '../../core/widgets/glow_tokens.dart';
 import '../../domain/entities/app_settings.dart';
 import '../features/home/page_p01_01_home_page.dart';
@@ -574,6 +575,12 @@ class _MainShellPageState extends ConsumerState<MainShellPage>
     if (!selected) {
       return item;
     }
+    // 档位来自 App 顶层注入的 GlowScope(GLOW-03);null = 用户关闭光感。
+    final GlowScope? scope = GlowScope.maybeOf(context);
+    final GlowLevel? glowLevel = scope == null ? GlowLevel.gentle : scope.level;
+    if (glowLevel == null) {
+      return item;
+    }
     // GLOW-02:选中项指示框叠一层光感(形状/圆角与 Miuix 指示框一致:
     //   cornerRadius 16 = MiuixNavigationRailDefaults.expandedItemCornerRadius;
     //   左右 margin 12 = expandedItemHorizontalMargin)。
@@ -587,9 +594,10 @@ class _MainShellPageState extends ConsumerState<MainShellPage>
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: CustomPaint(
-                painter: _RailIndicatorGlowPainter(
+                painter: GlowIndicatorPainter(
                   dark: MiuixTheme.of(context).brightness == Brightness.dark,
-                  tint: MiuixTheme.of(context).colors.surface,
+                  level: glowLevel,
+                  shape: const MiuixSquircleBorder(cornerRadius: 16),
                 ),
               ),
             ),
@@ -600,80 +608,7 @@ class _MainShellPageState extends ConsumerState<MainShellPage>
   }
 }
 
-/// 侧边栏选中指示框的光感层:三色柔光(左右边缘渗入)+ 顶部细高光线。
-/// 纯 Canvas 绘制,零 blur;shouldRepaint 恒 false(参数只有 dark)。
-class _RailIndicatorGlowPainter extends CustomPainter {
-  const _RailIndicatorGlowPainter({required this.dark, required this.tint});
 
-  final bool dark;
-
-  /// 主题表面色(把固定光色向当前主题拉近,Monet 取色下更协调)。
-  final Color tint;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.isEmpty) {
-      return;
-    }
-    // 形状与系统指示框**完全一致**:Miuix 用的是 MiuixSquircleBorder(超椭圆),
-    // 圆角取 MiuixNavigationRailDefaults.expandedItemCornerRadius = 16。
-    const MiuixSquircleBorder border = MiuixSquircleBorder(cornerRadius: 16);
-    final Path clip = border.getOuterPath(Offset.zero & size);
-    canvas.save();
-    canvas.clipPath(clip);
-
-    const GlowTokens t = GlowTokens.gentle;
-    final double a = t.glowOpacity * (dark ? 0.11 : 0.04);
-    if (a > 0.004) {
-      final double r = size.shortestSide * 1.6;
-      final List<Offset> anchors = <Offset>[
-        Offset(-size.width * 0.35, size.height * 0.28),
-        Offset(size.width * 1.35, size.height * 0.72),
-      ];
-      // PERF:必须用分离式混合(softLight 非分离式,会打断批处理 → 掉帧)。
-      final BlendMode mode = dark ? BlendMode.plus : BlendMode.srcOver;
-      for (int i = 0; i < anchors.length; i++) {
-        final Color base = Color.lerp(GlowTokens.glowColors[i], tint, 0.42)!;
-        final Paint p = Paint()
-          ..blendMode = mode
-          ..shader = RadialGradient(
-            colors: <Color>[
-              base.withValues(alpha: a),
-              base.withValues(alpha: a * 0.35),
-              base.withValues(alpha: 0),
-            ],
-            stops: const <double>[0.0, 0.55, 1.0],
-          ).createShader(Rect.fromCircle(center: anchors[i], radius: r));
-        canvas.drawCircle(anchors[i], r, p);
-      }
-    }
-
-    // 顶部细高光线(柔和过渡;浅色底白线不可见 → 仅深色绘制)。
-    if (dark) {
-      final double specA = t.specularOpacity * 0.5;
-      final Paint line = Paint()
-        ..strokeWidth = 1.1
-        ..strokeCap = StrokeCap.round
-        ..shader = LinearGradient(
-          colors: <Color>[
-            const Color(0x00FFFFFF),
-            const Color(0xFFFFFFFF).withValues(alpha: specA),
-            const Color(0x00FFFFFF),
-          ],
-        ).createShader(Rect.fromLTWH(0, 0, size.width, 1));
-      canvas.drawLine(
-        Offset(size.width * 0.18, 0.8),
-        Offset(size.width * 0.82, 0.8),
-        line,
-      );
-    }
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant _RailIndicatorGlowPainter old) =>
-      old.dark != dark || old.tint != tint;
-}
 
 /// 侧边栏与内容区的 1px 分隔线（静态 const，避免布局抖动）。
 class _RailDivider extends StatelessWidget {

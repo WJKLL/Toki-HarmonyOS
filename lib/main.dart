@@ -23,6 +23,7 @@ import 'core/logging/perf_monitor.dart';
 import 'core/live_view/live_view_course.dart';
 import 'core/platform/contract/plat_file_ops.dart';
 import 'core/platform/contract/plat_live_view.dart';
+import 'core/widgets/glow_material.dart';
 import 'core/platform/impl/ohos/file_ops_ohos.dart';
 import 'core/platform/impl/ohos/live_view_ohos.dart';
 import 'core/refresh_rate/refresh_rate_controller.dart';
@@ -114,8 +115,9 @@ Future<void> main() async {
   //   解析进内存缓存后 runApp，首页工具卡对账（byIdSync）同步可用；
   //   读/解析异常 → 降级内置 Steam 单工具（P-08 入口保底）+ 写日志。
   try {
-    final String catalogJson =
-        await rootBundle.loadString('assets/tools/tools.json');
+    final String catalogJson = await rootBundle.loadString(
+      'assets/tools/tools.json',
+    );
     if (!ToolCatalogStore.instance.seedFromJsonString(catalogJson)) {
       AppLogService.instance.error(
         'catalog',
@@ -224,73 +226,75 @@ class XiangJuGongApp extends ConsumerWidget {
       child: Builder(
         builder: (context) {
           final MiuixThemeData theme = MiuixTheme.of(context);
-          // v1.18.x（采样自适应）：根部全局捕获一切滚动（含 PageView 切页
-          // 动画、push 二级页滚动）→ scrollActivityProvider 置活动态 →
-          // CaptureHeartbeat 活动档每 2 帧采样（跟手防拖影）、静止回 4 帧省电。
-          return NotificationListener<ScrollNotification>(
-            onNotification: (ScrollNotification n) {
-              final ScrollActivityController c = ref.read(
-                scrollActivityProvider.notifier,
-              );
-              if (n is ScrollStartNotification ||
-                  n is ScrollUpdateNotification) {
-                c.notifyActivity(true);
-              } else if (n is ScrollEndNotification) {
-                c.notifyActivity(false);
-              }
-              return false; // 不拦截，继续冒泡给上层（main_shell S-16 等）。
-            },
-            child: MaterialApp.router(
-              title: AppConstants.appName,
-              debugShowCheckedModeBanner: false,
-              // v1.18.x（T1+D1）：全局滚动物理（Bouncing 回弹）。
-              scrollBehavior: const AppScrollBehavior(),
-              themeMode: _resolveThemeMode(
-                uiMode: settings.uiMode,
-                monetEnabled: settings.monetEnabled,
-                keyColor: settings.keyColor,
-                paletteStyle: settings.paletteStyle,
-              ),
-              theme: _shellTheme(theme, dark: false),
-              darkTheme: _shellTheme(theme, dark: true),
-              routerConfig: router,
-              // ── v1.0.1 修复（R-01 路由入口）：Android 系统字体缩放问题 ──
-              // 系统 textScaleFactor > 1.0 时 Miuix 组件布局溢出（列表行高、卡片换行）。
-              // 在 MaterialApp 壳的 Navigator 之上强制 textScaler = noScaling
-              // （等价于 textScaleFactor: 1.0），覆盖 Navigator 之下全部路由
-              // 继承的 MediaQuery 文本缩放（含系统字体设置变化）。
-              builder: (context, child) {
-                // v1.31.0：根部垫主题表面色 —— 二级页转场（右滑入/让位/弹出）
-                // 期间可能出现「无页面覆盖」的瞬时区域，Navigator 底层原本透黑
-                // （页面切换不连贯、短暂黑帧）；垫 surface 后与页面底色一致，
-                // 新/旧页衔接处观感连贯。
-                final Color backdrop = MiuixTheme.of(context).colors.surface;
-                return ColoredBox(
-                  color: backdrop,
-                  child: DefaultTextStyle.merge(
-                    // v1.32.1：文本默认去下划线（继承装饰兜底,参考 C-26/
-                    //   底栏 v1.28.1 修复的根因 —— MiuixText 会继承祖先
-                    //   DefaultTextStyle 的 decoration）。放在 Navigator 之上：
-                    //   一切继承默认样式的文本不再出现下划线;显式 decoration
-                    //   （如协议卡链接 TextSpan underline）不受影响。
-                    style: const TextStyle(decoration: TextDecoration.none),
-                    // v1.50.0(鸿蒙字体):完全跟随系统字体缩放(与系统同步;
-                    //   原 v1.0.1 强制 noScaling 取消 —— 系统设置变化即生效)。
-                    child: MediaQuery(
-                      data: MediaQuery.of(context).copyWith(
-                        textScaler: MediaQuery.textScalerOf(context),
-                      ),
-                      // v1.36.0：课程提醒常驻桥（课表→到点闹钟 / 上课→常驻通知；
-                      //   Android 生效，Web 空转透传）。
-                      child: CourseReminderBridge(
-                        child: C50SplashGate(
-                          child: child ?? const SizedBox.shrink(),
+          // v1.50.x（GLOW-03）：把设置里的光感档位注入作用域 ——
+          //   GlowMaterial / 侧边栏指示框据此决定档位或整体关闭（null = 关）。
+          return GlowScope(
+            level: ref.watch(glowLevelProvider),
+            child: NotificationListener<ScrollNotification>(
+              onNotification: (ScrollNotification n) {
+                final ScrollActivityController c = ref.read(
+                  scrollActivityProvider.notifier,
+                );
+                if (n is ScrollStartNotification ||
+                    n is ScrollUpdateNotification) {
+                  c.notifyActivity(true);
+                } else if (n is ScrollEndNotification) {
+                  c.notifyActivity(false);
+                }
+                return false; // 不拦截，继续冒泡给上层（main_shell S-16 等）。
+              },
+              child: MaterialApp.router(
+                title: AppConstants.appName,
+                debugShowCheckedModeBanner: false,
+                // v1.18.x（T1+D1）：全局滚动物理（Bouncing 回弹）。
+                scrollBehavior: const AppScrollBehavior(),
+                themeMode: _resolveThemeMode(
+                  uiMode: settings.uiMode,
+                  monetEnabled: settings.monetEnabled,
+                  keyColor: settings.keyColor,
+                  paletteStyle: settings.paletteStyle,
+                ),
+                theme: _shellTheme(theme, dark: false),
+                darkTheme: _shellTheme(theme, dark: true),
+                routerConfig: router,
+                // ── v1.0.1 修复（R-01 路由入口）：Android 系统字体缩放问题 ──
+                // 系统 textScaleFactor > 1.0 时 Miuix 组件布局溢出（列表行高、卡片换行）。
+                // 在 MaterialApp 壳的 Navigator 之上强制 textScaler = noScaling
+                // （等价于 textScaleFactor: 1.0），覆盖 Navigator 之下全部路由
+                // 继承的 MediaQuery 文本缩放（含系统字体设置变化）。
+                builder: (context, child) {
+                  // v1.31.0：根部垫主题表面色 —— 二级页转场（右滑入/让位/弹出）
+                  // 期间可能出现「无页面覆盖」的瞬时区域，Navigator 底层原本透黑
+                  // （页面切换不连贯、短暂黑帧）；垫 surface 后与页面底色一致，
+                  // 新/旧页衔接处观感连贯。
+                  final Color backdrop = MiuixTheme.of(context).colors.surface;
+                  return ColoredBox(
+                    color: backdrop,
+                    child: DefaultTextStyle.merge(
+                      // v1.32.1：文本默认去下划线（继承装饰兜底,参考 C-26/
+                      //   底栏 v1.28.1 修复的根因 —— MiuixText 会继承祖先
+                      //   DefaultTextStyle 的 decoration）。放在 Navigator 之上：
+                      //   一切继承默认样式的文本不再出现下划线;显式 decoration
+                      //   （如协议卡链接 TextSpan underline）不受影响。
+                      style: const TextStyle(decoration: TextDecoration.none),
+                      // v1.50.0(鸿蒙字体):完全跟随系统字体缩放(与系统同步;
+                      //   原 v1.0.1 强制 noScaling 取消 —— 系统设置变化即生效)。
+                      child: MediaQuery(
+                        data: MediaQuery.of(context).copyWith(
+                          textScaler: MediaQuery.textScalerOf(context),
+                        ),
+                        // v1.36.0：课程提醒常驻桥（课表→到点闹钟 / 上课→常驻通知；
+                        //   Android 生效，Web 空转透传）。
+                        child: CourseReminderBridge(
+                          child: C50SplashGate(
+                            child: child ?? const SizedBox.shrink(),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
           );
         },

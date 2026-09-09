@@ -88,6 +88,15 @@ class GlowTokens {
     GlowLevel.exquisite => exquisite,
   };
 
+  /// 档位强度乘数 —— 官方三档的光池参数差距(0.05/0.28/0.34)在实机上
+  /// 「标准 ↔ 丰富」几乎看不出区别,故按档位再拉开一次,保证可感知;
+  /// 但过高会在边缘结成明显色斑(实测 2.2 偏强)→ 收敛到 1.7。
+  double get alphaMultiplier => switch (level) {
+    GlowLevel.smooth => 0.5,
+    GlowLevel.gentle => 1.0,
+    GlowLevel.exquisite => 1.7,
+  };
+
   /// 能力门禁(官方 adaptive):系统「减弱动画」→ smooth,否则 gentle。
   ///
   /// 与 HDS 一致:设备是否支持 IMMERSIVE 材质由原生侧探测,本项目当前
