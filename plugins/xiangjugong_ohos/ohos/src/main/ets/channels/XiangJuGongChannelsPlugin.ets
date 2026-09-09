@@ -24,7 +24,7 @@ import {
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { picker } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { abilityAccessCtrl, common } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Want, WantAgent, wantAgent } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { reminderAgentManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
@@ -32,6 +32,8 @@ import { preferences } from '@kit.ArkData';
 import { formProvider, formBindingData } from '@kit.FormKit';
 import { huks } from '@kit.UniversalKeystoreKit';
 import { util } from '@kit.ArkTS';
+import { liveViewManager } from '@kit.LiveViewKit';
+import { image } from '@kit.ImageKit';
 
 const TAG = 'XJChannels';
 const MEDIA_PERM = 'ohos.permission.WRITE_IMAGEVIDEO';
@@ -58,6 +60,90 @@ interface ReminderDiag {
 
 /** HUKS 密钥材料(常量,与 KeyProperties 一致)。 */
 const HUKS_ALIAS = 'xjug_secure_v1';
+
+// ── liveview 通道参数(PLAT-03;ArkTS 红线:object literal 必须显式 interface)──
+/** 计时器参数。 */
+interface LiveViewTimerArgs {
+  time?: number;
+  isCountdown?: boolean;
+  isPaused?: boolean;
+  presetTitle?: string;
+  presetContent?: string;
+}
+
+/** 胶囊参数。 */
+interface LiveViewCapsuleArgs {
+  type?: number;
+  status?: number;
+  title?: string;
+  content?: string;
+  time?: number;
+  isCountdown?: boolean;
+}
+
+/** 富文本段(textColor 为 #ARGB)。 */
+interface LiveViewRichTextArgs {
+  text: string;
+  textColor?: string;
+}
+
+/** 固定区 + 展开区参数。 */
+interface LiveViewPrimaryArgs {
+  title?: string;
+  content?: LiveViewRichTextArgs[];
+  keepTime?: number;
+  aliveTime?: number;
+  layoutType?: number;
+  progress?: number;
+  lineType?: number;
+}
+
+/** probe 返回。 */
+interface LiveViewProbeOut {
+  supported: boolean;
+  enabled: boolean;
+  code: number;
+  message: string;
+}
+
+/** start/update/stop 返回。 */
+interface LiveViewOutcomeOut {
+  ok: boolean;
+  resultCode: number;
+  message: string;
+  degraded: boolean;
+}
+
+/** 完整规格(Dart 侧 JSON 编码 → ArkTS 侧 JSON.parse;嵌套 Map 直接断言会失效)。 */
+interface LiveViewSpecArgs {
+  id?: number;
+  event?: string;
+  isMute?: boolean;
+  timer?: LiveViewTimerArgs;
+  capsule?: LiveViewCapsuleArgs;
+  primary?: LiveViewPrimaryArgs;
+}
+
+/** isActive 返回。 */
+interface LiveViewActiveOut {
+  active: boolean;
+}
+
+/**
+ * TimerCapsule + title。
+ * 实测:实况窗校验要求 `capsule.title` 必填,但 SDK 的 TimerCapsule 未声明该字段
+ * (仅 TextCapsule 有),故用扩展接口补齐,运行时仍按 TimerCapsule 处理。
+ */
+interface TimerCapsuleWithTitle extends liveViewManager.TimerCapsule {
+  title?: string;
+}
+
+/** 实况窗错误码(来自 @hms.core.liveview.liveViewManager)。 */
+const LV_ERR_ALREADY_EXISTS = 1003500006;
+const LV_ERR_SEQ_INCORRECT = 1003500011;
+const LV_ERR_NOT_EXIST = 1003500009;
+const LV_THROTTLE_MS = 1000;
+const LV_PREF_STORE = 'xjug_liveview';
 
 export default class XiangJuGongChannelsPlugin implements FlutterPlugin, AbilityAware {
 
@@ -117,6 +203,11 @@ export default class XiangJuGongChannelsPlugin implements FlutterPlugin, Ability
     this.register(binding.getBinaryMessenger(), 'xiangjugong/secure', {
       onMethodCall: (call: MethodCall, result: MethodResult) => {
         this.handleSecure(call, result);
+      }
+    });
+    this.register(binding.getBinaryMessenger(), 'xiangjugong/liveview', {
+      onMethodCall: (call: MethodCall, result: MethodResult) => {
+        this.handleLiveView(call, result);
       }
     });
     Log.i(TAG, 'all channels registered');
@@ -1027,6 +1118,536 @@ export default class XiangJuGongChannelsPlugin implements FlutterPlugin, Ability
       const err = e as BusinessError;
       result.error('secure_failed', err.message, err.code);
     }
+  }
+
+  // ── liveview(PLAT-03:实况窗 LiveView Kit)───────────────
+  // 说明:纯运行时 API,无需在 module.json5 注册;sequence 自增持久化、
+  //   同 id 先结束再创建、全局 1s 节流均在本层收口;任何失败都降级返回,
+  //   不打断业务(业务继续走常驻通知 + 桌面卡片)。
+  private lastLiveViewAt: number = 0;
+  /** 胶囊图标缓存(避免每次调用重建 PixelMap)。 */
+  private liveViewIconCache: image.PixelMap | undefined = undefined;
+
+  private async handleLiveView(call: MethodCall, result: MethodResult): Promise<void> {
+    if (call.method === 'probe') {
+      await this.liveViewProbe(result);
+      return;
+    }
+    if (call.method === 'start') {
+      await this.liveViewApply(call, result, true);
+      return;
+    }
+    if (call.method === 'update') {
+      await this.liveViewApply(call, result, false);
+      return;
+    }
+    if (call.method === 'stop') {
+      await this.liveViewStop(call, result);
+      return;
+    }
+    if (call.method === 'isActive') {
+      await this.liveViewIsActive(call, result);
+      return;
+    }
+    result.notImplemented();
+  }
+
+  /** 设备是否具备 LiveView 系统能力。 */
+  private liveViewSupported(): boolean {
+    try {
+      return canIUse('SystemCapability.LiveView.LiveViewService');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 降级返回(实况窗不可用)。 */
+  private liveViewDegrade(result: MethodResult, reason: string): void {
+    const out: LiveViewOutcomeOut = {
+      ok: false,
+      resultCode: 0,
+      message: reason,
+      degraded: true
+    };
+    Log.i(TAG, 'liveview degraded: ' + reason);
+    result.success(out);
+  }
+
+  private async liveViewProbe(result: MethodResult): Promise<void> {
+    const supported = this.liveViewSupported();
+    if (!supported) {
+      const out: LiveViewProbeOut = {
+        supported: false,
+        enabled: false,
+        code: 0,
+        message: 'SystemCapability.LiveView.LiveViewService 不可用'
+      };
+      result.success(out);
+      return;
+    }
+    try {
+      const enabled: boolean = await liveViewManager.isLiveViewEnabled();
+      const out: LiveViewProbeOut = {
+        supported: true,
+        enabled: enabled,
+        code: 0,
+        message: ''
+      };
+      Log.i(TAG, 'liveview probe ok: enabled=' + enabled);
+      result.success(out);
+    } catch (e) {
+      const err = e as BusinessError;
+      const out: LiveViewProbeOut = {
+        supported: true,
+        enabled: false,
+        code: err.code,
+        message: err.message
+      };
+      Log.i(TAG, 'liveview probe failed: ' + err.code + ' ' + err.message);
+      result.success(out);
+    }
+  }
+
+  /** sequence 自增并持久化(否则 update/stop 报 1003500011)。 */
+  private async liveViewNextSeq(id: number): Promise<number> {
+    const ctx = this.abilityContext;
+    if (ctx === null) {
+      return 1;
+    }
+    try {
+      const prefs = await preferences.getPreferences(ctx, LV_PREF_STORE);
+      const key = 'seq_' + id;
+      const cur = await prefs.get(key, 0) as number;
+      const next = cur + 1;
+      await prefs.put(key, next);
+      await prefs.flush();
+      return next;
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.e(TAG, 'liveview seq failed: ' + err.code + ' ' + err.message);
+      return 1;
+    }
+  }
+
+  /** 全局 1s 节流(否则报 1003500008)。 */
+  private liveViewThrottleOk(): boolean {
+    const now = Date.now();
+    if (now - this.lastLiveViewAt < LV_THROTTLE_MS) {
+      return false;
+    }
+    this.lastLiveViewAt = now;
+    return true;
+  }
+
+  /** 构建胶囊图标 —— capsule.icon 为**必填**(实测缺失报 401);从应用图标资源转 PixelMap。 */
+  private async liveViewIcon(): Promise<image.PixelMap | undefined> {
+    if (this.liveViewIconCache !== undefined) {
+      return this.liveViewIconCache;
+    }
+    const ctx = this.abilityContext;
+    if (ctx === null) {
+      return undefined;
+    }
+    try {
+      const data: Uint8Array = ctx.resourceManager.getMediaByNameSync('app_icon');
+      const src: image.ImageSource = image.createImageSource(data.buffer as ArrayBuffer);
+      const pm: image.PixelMap = await src.createPixelMap();
+      await src.release();
+      // 胶囊图标官方建议 36*36vp;原图过大时平台会判「参数长度超限」→ 缩到 96px 内。
+      const info: image.ImageInfo = await pm.getImageInfo();
+      const w: number = info.size.width;
+      const h: number = info.size.height;
+      if (w > 36 || h > 36) {
+        await pm.scale(36 / w, 36 / h);
+      }
+      this.liveViewIconCache = pm;
+      Log.i(TAG, 'liveview icon ok: ' + w + 'x' + h);
+      return pm;
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.e(TAG, 'liveview icon failed: ' + err.code + ' ' + err.message);
+      return undefined;
+    }
+  }
+
+  /** 构建点击跳转 WantAgent —— primary.clickAction 为**必填**(实测缺失报 401)。 */
+  private async liveViewClickAction(): Promise<WantAgent | undefined> {
+    const ctx = this.abilityContext;
+    const bundleName = ctx !== null ? ctx.abilityInfo.bundleName : 'com.example.poc_ohos';
+    const abilityName = ctx !== null ? ctx.abilityInfo.name : 'EntryAbility';
+    try {
+      const target: Want = {
+        bundleName: bundleName,
+        abilityName: abilityName
+      };
+      const info: wantAgent.WantAgentInfo = {
+        wants: [target],
+        actionType: wantAgent.OperationType.START_ABILITIES,
+        requestCode: 0,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      };
+      return await wantAgent.getWantAgent(info);
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.e(TAG, 'liveview clickAction failed: ' + err.code + ' ' + err.message);
+      return undefined;
+    }
+  }
+
+  /** 组装 liveViewManager.LiveView。 */
+  private buildLiveView(spec: LiveViewSpecArgs, id: number, seq: number,
+    clickAction: WantAgent | undefined,
+    icon: image.PixelMap | undefined): liveViewManager.LiveView {
+    const eventArg = spec.event;
+    const event: string = eventArg !== undefined && eventArg.length > 0 ? eventArg : 'TIMER';
+    const muteArg = spec.isMute;
+    const isMute: boolean = muteArg === undefined ? true : muteArg;
+    const primaryArgs = spec.primary;
+
+    // 固定区
+    const titleArg = primaryArgs !== undefined ? primaryArgs.title : undefined;
+    const primary: liveViewManager.PrimaryData = {
+      title: titleArg !== undefined ? titleArg : '',
+      keepTime: primaryArgs !== undefined && primaryArgs.keepTime !== undefined
+        ? primaryArgs.keepTime : 5
+    };
+    if (primaryArgs !== undefined && primaryArgs.aliveTime !== undefined) {
+      primary.aliveTime = primaryArgs.aliveTime;
+    }
+    if (clickAction !== undefined) {
+      primary.clickAction = clickAction;
+    }
+    if (primaryArgs !== undefined && primaryArgs.content !== undefined) {
+      const richList: liveViewManager.RichText[] = [];
+      for (let i = 0; i < primaryArgs.content.length; i++) {
+        const src = primaryArgs.content[i];
+        const item: liveViewManager.RichText = { text: src.text };
+        if (src.textColor !== undefined) {
+          item.textColor = src.textColor;
+        }
+        richList.push(item);
+      }
+      if (richList.length > 0) {
+        primary.content = richList;
+      }
+    }
+    // 展开区(**必填**:即使不展开也必须传 LayoutData,实测缺失报 401)
+    if (primaryArgs !== undefined && primaryArgs.layoutType === 3) {
+      const pl: liveViewManager.ProgressLayout = {
+        layoutType: liveViewManager.LayoutType.LAYOUT_TYPE_PROGRESS,
+        progress: primaryArgs.progress !== undefined ? primaryArgs.progress : 0
+      };
+      if (primaryArgs.lineType === 0) {
+        pl.lineType = liveViewManager.LineType.LINE_TYPE_DOTTED_LINE;
+      } else if (primaryArgs.lineType === 1) {
+        pl.lineType = liveViewManager.LineType.LINE_TYPE_NORMAL_SOLID_LINE;
+      } else if (primaryArgs.lineType === 2) {
+        pl.lineType = liveViewManager.LineType.LINE_TYPE_THICK_SOLID_LINE;
+      }
+      // nodeIcons 为**必填**(实测缺失报 401);课程用「开始/结束」两个节点。
+      if (icon !== undefined) {
+        pl.nodeIcons = [icon, icon];
+      }
+      primary.layoutData = pl;
+    } else {
+      const base: liveViewManager.LayoutData = {
+        layoutType: liveViewManager.LayoutType.LAYOUT_TYPE_DEFAULT
+      };
+      primary.layoutData = base;
+    }
+
+    // 计时器(含归零预设文案:应用不在前台也能自动切换)
+    let timer: liveViewManager.LiveViewTimer | undefined = undefined;
+    const timerArgs = spec.timer;
+    if (timerArgs !== undefined) {
+      const t: liveViewManager.LiveViewTimer = {
+        time: timerArgs.time !== undefined ? timerArgs.time : 0,
+        isCountdown: timerArgs.isCountdown === undefined ? true : timerArgs.isCountdown,
+        isPaused: timerArgs.isPaused === undefined ? false : timerArgs.isPaused
+      };
+      if (timerArgs.presetTitle !== undefined || timerArgs.presetContent !== undefined) {
+        const preset: liveViewManager.CountdownPreset = {};
+        if (timerArgs.presetTitle !== undefined) {
+          preset.presetTitle = timerArgs.presetTitle;
+        }
+        if (timerArgs.presetContent !== undefined) {
+          preset.presetContent = timerArgs.presetContent;
+        }
+        t.countdownPreset = preset;
+        t.capsuleCountdownPreset = preset;
+      }
+      timer = t;
+    }
+
+    // 胶囊
+    let capsule: liveViewManager.TextCapsule | liveViewManager.TimerCapsule
+      | liveViewManager.ProgressCapsule | undefined = undefined;
+    const capsuleArgs = spec.capsule;
+    if (capsuleArgs !== undefined) {
+      const status: number = capsuleArgs.status !== undefined ? capsuleArgs.status : 1;
+      if (capsuleArgs.type === 2) {
+        const tc: TimerCapsuleWithTitle = {
+          type: liveViewManager.CapsuleType.CAPSULE_TYPE_TIMER,
+          status: status
+        };
+        // 校验要求 capsule.title 必填(SDK d.ts 未声明 → 扩展接口补齐)。
+        tc.title = capsuleArgs.title !== undefined ? capsuleArgs.title : 'Toki';
+        if (capsuleArgs.content !== undefined) {
+          tc.content = capsuleArgs.content;
+        }
+        if (capsuleArgs.time !== undefined) {
+          tc.time = capsuleArgs.time;
+        }
+        if (capsuleArgs.isCountdown !== undefined) {
+          tc.isCountdown = capsuleArgs.isCountdown;
+        }
+        capsule = tc;
+      } else if (capsuleArgs.type === 3) {
+        const pc: liveViewManager.ProgressCapsule = {
+          type: liveViewManager.CapsuleType.CAPSULE_TYPE_PROGRESS,
+          status: status
+        };
+        if (capsuleArgs.content !== undefined) {
+          pc.content = capsuleArgs.content;
+        }
+        capsule = pc;
+      } else {
+        const tc: liveViewManager.TextCapsule = {
+          type: liveViewManager.CapsuleType.CAPSULE_TYPE_TEXT,
+          status: status
+        };
+        // 校验要求 capsule.title 必填(缺失报 401)。
+        tc.title = capsuleArgs.title !== undefined ? capsuleArgs.title : 'Toki';
+        if (capsuleArgs.content !== undefined) {
+          tc.content = capsuleArgs.content;
+        }
+        capsule = tc;
+      }
+    }
+
+    if (capsule !== undefined) {
+      if (icon !== undefined) {
+        capsule.icon = icon;
+        // 底色为**必填**(实测缺失报 401);官方默认黑色微渐变 #000000。
+        if (capsule.backgroundColor === undefined) {
+          capsule.backgroundColor = '#000000';
+        }
+      } else {
+        // 无图标 → 省略胶囊(icon 为平台必填,缺失会整窗创建失败)。
+        capsule = undefined;
+        Log.e(TAG, 'liveview capsule skipped: no icon');
+      }
+    }
+    const data: liveViewManager.LiveViewData = { primary: primary };
+    if (capsule !== undefined) {
+      data.capsule = capsule;
+    }
+    const lv: liveViewManager.LiveView = {
+      id: id,
+      event: event,
+      sequence: seq,
+      isMute: isMute,
+      liveViewData: data
+    };
+    if (timer !== undefined) {
+      lv.timer = timer;
+    }
+    return lv;
+  }
+
+  private async liveViewApply(call: MethodCall, result: MethodResult,
+    isStart: boolean): Promise<void> {
+    if (!this.liveViewSupported()) {
+      this.liveViewDegrade(result, '设备不支持实况窗');
+      return;
+    }
+    const id = call.argument('id') as number | undefined;
+    const jsonArg = call.argument('json') as string | undefined;
+    if (id === undefined || jsonArg === undefined) {
+      result.error('bad_args', 'id/json missing', null);
+      return;
+    }
+    let spec: LiveViewSpecArgs;
+    try {
+      spec = JSON.parse(jsonArg) as LiveViewSpecArgs;
+    } catch (e) {
+      result.error('bad_json', 'json parse failed', null);
+      return;
+    }
+    if (!this.liveViewThrottleOk()) {
+      const busy: LiveViewOutcomeOut = {
+        ok: false,
+        resultCode: 1003500008,
+        message: '节流:1s 内重复调用',
+        degraded: false
+      };
+      result.success(busy);
+      return;
+    }
+    // 权益门禁(未开通 → 静默降级,不刷错误)
+    let enabled = false;
+    try {
+      enabled = await liveViewManager.isLiveViewEnabled();
+    } catch (e) {
+      enabled = false;
+    }
+    if (!enabled) {
+      this.liveViewDegrade(result, '实况窗权益未开通');
+      return;
+    }
+    try {
+      const clickAction = await this.liveViewClickAction();
+      const icon = await this.liveViewIcon();
+      Log.e(TAG, 'liveview icon state=' + (icon === undefined ? 'undefined' : 'ok'));
+      const seq = await this.liveViewNextSeq(id);
+      let lv = this.buildLiveView(spec, id, seq, clickAction, icon);
+      let r: liveViewManager.LiveViewResult | null = null;
+      try {
+        r = isStart
+          ? await liveViewManager.startLiveView(lv)
+          : await liveViewManager.updateLiveView(lv);
+      } catch (inner) {
+        const ie = inner as BusinessError;
+        // 同 id 已存在 → 结束旧窗后用新 sequence 重建
+        if (isStart && ie.code === LV_ERR_ALREADY_EXISTS) {
+          await liveViewManager.stopLiveView(lv);
+          const seq2 = await this.liveViewNextSeq(id);
+          lv = this.buildLiveView(spec, id, seq2, clickAction, icon);
+          r = await liveViewManager.startLiveView(lv);
+        } else if (!isStart && ie.code === LV_ERR_NOT_EXIST) {
+          // 窗已结束 → 退化为创建
+          const seq2 = await this.liveViewNextSeq(id);
+          lv = this.buildLiveView(spec, id, seq2, clickAction, icon);
+          r = await liveViewManager.startLiveView(lv);
+        } else if (isStart && ie.code === 401 && ie.message.indexOf('capsule') >= 0) {
+          // 胶囊参数被平台拒绝(icon 等)→ 去掉胶囊重试,保证卡片态可用。
+          const seq3 = await this.liveViewNextSeq(id);
+          lv = this.buildLiveView(spec, id, seq3, clickAction, undefined);
+          r = await liveViewManager.startLiveView(lv);
+          Log.e(TAG, 'liveview retried without capsule');
+        } else {
+          const fail: LiveViewOutcomeOut = {
+            ok: false,
+            resultCode: ie.code,
+            message: ie.message,
+            degraded: false
+          };
+          Log.e(TAG, 'liveview apply failed: ' + ie.code + ' ' + ie.message);
+          result.success(fail);
+          return;
+        }
+      }
+      if (r === null) {
+        const empty: LiveViewOutcomeOut = {
+          ok: false,
+          resultCode: 0,
+          message: '未返回结果',
+          degraded: false
+        };
+        result.success(empty);
+        return;
+      }
+      const out: LiveViewOutcomeOut = {
+        ok: true,
+        resultCode: r.resultCode,
+        message: r.message.toString(),
+        degraded: false
+      };
+      Log.i(TAG, 'liveview ' + (isStart ? 'start' : 'update') + ' id=' + id
+        + ' seq=' + seq + ' code=' + r.resultCode);
+      result.success(out);
+    } catch (e) {
+      const err = e as BusinessError;
+      const out: LiveViewOutcomeOut = {
+        ok: false,
+        resultCode: err.code,
+        message: err.message,
+        degraded: false
+      };
+      Log.e(TAG, 'liveview apply failed: ' + err.code + ' ' + err.message);
+      result.success(out);
+    }
+  }
+
+  private async liveViewStop(call: MethodCall, result: MethodResult): Promise<void> {
+    if (!this.liveViewSupported()) {
+      this.liveViewDegrade(result, '设备不支持实况窗');
+      return;
+    }
+    const id = call.argument('id') as number | undefined;
+    if (id === undefined) {
+      result.error('bad_args', 'id missing', null);
+      return;
+    }
+    try {
+      const clickAction = await this.liveViewClickAction();
+      const seq = await this.liveViewNextSeq(id);
+      // stop 也要求 primary.title 为**非空**合法字符串(实测空串报 401)。
+      const primary: liveViewManager.PrimaryData = { title: 'Toki' };
+      const stopLayout: liveViewManager.LayoutData = {
+        layoutType: liveViewManager.LayoutType.LAYOUT_TYPE_DEFAULT
+      };
+      primary.layoutData = stopLayout;
+      if (clickAction !== undefined) {
+        primary.clickAction = clickAction;
+      }
+      const data: liveViewManager.LiveViewData = { primary: primary };
+      const lv: liveViewManager.LiveView = {
+        id: id,
+        event: 'TIMER',
+        sequence: seq,
+        liveViewData: data
+      };
+      const r = await liveViewManager.stopLiveView(lv);
+      const out: LiveViewOutcomeOut = {
+        ok: true,
+        resultCode: r.resultCode,
+        message: r.message.toString(),
+        degraded: false
+      };
+      Log.i(TAG, 'liveview stop id=' + id + ' seq=' + seq);
+      result.success(out);
+    } catch (e) {
+      const err = e as BusinessError;
+      // 不存在/已结束视为成功(幂等)
+      if (err.code === LV_ERR_NOT_EXIST) {
+        const out: LiveViewOutcomeOut = {
+          ok: true,
+          resultCode: err.code,
+          message: '已结束',
+          degraded: false
+        };
+        result.success(out);
+        return;
+      }
+      const out: LiveViewOutcomeOut = {
+        ok: false,
+        resultCode: err.code,
+        message: err.message,
+        degraded: false
+      };
+      Log.e(TAG, 'liveview stop failed: ' + err.code + ' ' + err.message);
+      result.success(out);
+    }
+  }
+
+  private async liveViewIsActive(call: MethodCall, result: MethodResult): Promise<void> {
+    const id = call.argument('id') as number | undefined;
+    if (id === undefined) {
+      result.error('bad_args', 'id missing', null);
+      return;
+    }
+    let active = false;
+    if (this.liveViewSupported()) {
+      try {
+        const lv = await liveViewManager.getActiveLiveView(id);
+        active = lv !== null && lv !== undefined;
+      } catch (e) {
+        active = false;
+      }
+    }
+    const out: LiveViewActiveOut = { active: active };
+    result.success(out);
   }
 }
 

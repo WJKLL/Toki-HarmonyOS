@@ -20,8 +20,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'core/constants/app_constants.dart';
 import 'core/logging/app_log_service.dart';
 import 'core/logging/perf_monitor.dart';
+import 'core/live_view/live_view_course.dart';
 import 'core/platform/contract/plat_file_ops.dart';
+import 'core/platform/contract/plat_live_view.dart';
 import 'core/platform/impl/ohos/file_ops_ohos.dart';
+import 'core/platform/impl/ohos/live_view_ohos.dart';
 import 'core/refresh_rate/refresh_rate_controller.dart';
 import 'core/tools/tool_catalog_store.dart';
 import 'core/utils/u04_platform_utils.dart';
@@ -43,12 +46,40 @@ import 'presentation/router/app_router.dart';
 import 'presentation/widgets/c50_splash_gate.dart';
 import 'presentation/widgets/course_reminder_bridge.dart';
 
+/// PLAT-03:实况窗链路自检开关(仅 `--dart-define=LIVEVIEW_SELFTEST=1` 时开启)。
+const bool _kLiveViewSelfTest = bool.fromEnvironment('LIVEVIEW_SELFTEST');
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // DSH-OH:注册 OH 平台文件实现(选图/选 Excel/保存文件/存相册 →
   //   原生 PhotoView/DocumentViewPicker + media 通道)。缺失注册=上述
   //   全部回退默认 file_picker(OH 无实现 → 不可用)。
   PlatFileOpsRegistry.register(OhosFileOps());
+  // DSH-OH(PLAT-03):注册 OH 实况窗实现(通道 xiangjugong/liveview →
+  //   @kit.LiveViewKit)。缺失注册 = 全部静默降级,业务继续走常驻通知 + 桌面卡片。
+  PlatLiveViewRegistry.register(const OhosLiveView());
+  // PLAT-03:启动自检 —— 实况窗能力/权益状态进日志(便于远程排查;失败静默)。
+  //   附加:`--dart-define=LIVEVIEW_SELFTEST=1` 时执行 start→stop 全链路自检(仅验证用)。
+  unawaited(
+    PlatLiveViewRegistry.instance.probe().then((LiveViewProbe p) async {
+      debugPrint(
+        '[LiveView] supported=${p.supported} enabled=${p.enabled} '
+        'code=${p.code} ${p.message}',
+      );
+      if (!p.usable || !_kLiveViewSelfTest) return;
+      final LiveViewOutcome s = await PlatLiveViewRegistry.instance.start(
+        LiveViewCourse.testSpec(),
+      );
+      debugPrint(
+        '[LiveView] selftest start ok=${s.ok} ${s.resultCode} ${s.message}',
+      );
+      await Future<void>.delayed(const Duration(seconds: 3));
+      final LiveViewOutcome e = await PlatLiveViewRegistry.instance.stop(99);
+      debugPrint(
+        '[LiveView] selftest stop ok=${e.ok} ${e.resultCode} ${e.message}',
+      );
+    }),
+  );
   // 冷启动仅一次内存化读取（shared_preferences 内存缓存，零 IO 帧耗）。
   final SharedPreferences prefs = await SharedPreferences.getInstance();
   final SettingsRepositoryImpl repository = SettingsRepositoryImpl(prefs);

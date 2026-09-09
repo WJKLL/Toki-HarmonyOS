@@ -15,6 +15,7 @@
 | `xiangjugong/cards` | syncToday | 今日课程快照 → course_card.json → 卡片 updateForm(↓ 2.2) | 本期 |
 | `xiangjugong/secure` | write/read/delete | **HUKS AES-256-GCM**(↓ 2.3) | 本期 |
 | `xiangjugong/diag` | log | 诊断(hilog) | 开发用 |
+| `xiangjugong/liveview` | probe/start/update/stop/isActive | **实况窗 LiveView Kit**(↓ 2.4) | S1 本期 |
 
 ## 2. 本期实现
 
@@ -36,8 +37,41 @@
 - 通道 `secure`:`write/read/delete`;HUKS AES-256-GCM(alias `xjug_secure_v1`;init 不传 IV → 系统生成 IV 拼在密文前 16B;解密切 IV 回填 `HUKS_TAG_IV`)→ base64 → preferences(`xjug_secure`)。
 - Dart:`OhosSecureStore`(lib/core/platform/impl/ohos/secure_store_ohos.dart);`steam_auth_service.dart` 工厂加 OH 分支(`OhosSteamAuthService`,镜像专属,主工程保持 flutter_secure_storage)。
 
+### 2.4 实况窗 LiveView Kit(S1 骨架,2026-09-09)
+- 通道 `xiangjugong/liveview`:`probe/start/update/stop/isActive`;实现于 `XiangJuGongChannelsPlugin.ets`(约 330 行)。
+- Dart 侧:`PlatLiveView` 契约(`lib/core/platform/contract/plat_live_view.dart`,双端同字)+ 镜像实现 `OhosLiveView`(`impl/ohos/live_view_ohos.dart`,镜像独有);`main.dart` 注册 `PlatLiveViewRegistry.register(const OhosLiveView())`。
+- 原生侧收口三件事:**sequence 自增持久化**(`xjug_liveview` preferences,防 1003500011)、**同 id 先 stop 再 start**(防 1003500006)、**全局 1s 节流**(防 1003500008);任何失败都返回 `degraded` 不打断业务。
+- 诊断入口:设置页「实况窗诊断(LiveView Kit)」→ 显示 `supported/enabled/resultCode`。
+- **实测(2026-09-09,LRT-W30)**:`[LiveView] supported=true enabled=true code=0` —— 设备能力与权益均可用;系统侧存在 `LiveCapsuleListVm`(SystemUI 实况窗胶囊组件)。
+- 场景规格与节点设计见 `D:\Projects\LIVEVIEW_PLAN.md`(v3);官方设计文档留档于 `D:\Projects\design_refs\`。
+- 待办:start/update/stop 的真机全链路验证放 S2(课程时段计时场景首次接入时)。
+
+#### 2.4.1 平台参数校验约束(2026-09-09 逐项实测踩坑,重要)
+`startLiveView` 的参数校验比 d.ts 声明严格得多,以下字段**必填**,缺失均报 `401`:
+
+| 字段 | 说明 |
+|---|---|
+| `primary.title` | 非空字符串 |
+| `primary.clickAction` | 必填 `WantAgent`(d.ts 标可选) |
+| `primary.layoutData` | **即使不展开也必须传**(用 `LAYOUT_TYPE_DEFAULT`) |
+| `capsule.icon` | 必填;PixelMap 需 **≤36px**,过大判「parameter length exceeds the limit」 |
+| `capsule.backgroundColor` | 必填(默认 `#000000`;当前仍被拒,待查格式) |
+| `capsule.title` | 必填,但 **TimerCapsule 类型未声明该字段** → 改用 `TextCapsule` |
+| `layoutData.nodeIcons` | progress 布局必填(2-5 个节点图标);当前未通过 → 暂用 DEFAULT 布局 |
+
+**两个关键坑**:
+1. **嵌套 Map 参数不可用**:Dart 侧传嵌套 Map,ArkTS 侧 `as SomeInterface` 断言后**属性访问恒为空**(报「mustbe string」)。
+   → 必须按项目惯例改为 **JSON 字符串 + `JSON.parse`**(`{'id': n, 'json': jsonEncode(spec)}`)。
+2. **自动降级**:胶囊参数被拒时,ArkTS 侧自动去掉胶囊重试,保证卡片态可用(`liveview retried without capsule`)。
+
+#### 2.4.2 权益实测结论
+参数校验全部通过后,`startLiveView` 返回 **`1003500005 - The right of liveView is not enabled`** ——
+即:代码链路已完全打通,**仅差正式权益**;权益通过后无需改代码即可生效。
+(`isLiveViewEnabled()` 返回 `true` 只代表系统开关允许,不代表正式权益已开通。)
+
 ## 3. 待办/升级项
-- **API 26+ 锁屏实况窗**(Live View Kit,华为预览含"百分比进度环辅助区模板"):API 24 SDK 无该 Kit,且 `NOTIFICATION_CONTENT_LIVE_VIEW` 标注仅系统应用;届时把 2.1/2.2 的倒计时接到锁屏灵动区。
+- **实况窗(LiveView Kit)**:✅ 已落地 S1 骨架(见 §2.4)。~~「API 24 SDK 无该 Kit」为误记~~ —— 实际 `@kit.LiveViewKit` 自 4.1.0(11) 起可用,SDK `6.1.1.125` 完整包含,设备实测 `supported=true enabled=true`。
+- **API 26+ 锁屏实况窗(沉浸态)**:`LiveViewLockScreenExtensionAbility` 随 Kit 提供(5.0.0(12) 起);`NOTIFICATION_CONTENT_LIVE_VIEW` 仍标注仅系统应用;届时把 2.1/2.2 的倒计时接到锁屏灵动区。
 - **实况表单(Live Form,API 20+)(已写代码,注册被工具链限制)**:`liveformability/LiveFormAbility.ets` + `pages/LiveCoursePage.ets`(大圆环 + 剩余分钟 + 下课时间,30s 自治刷新读同源 course_card.json)+ `profile/live_form_config.json` 均已就绪;但 command-line-tools **6.1.1.300 的 PreBuild 不支持 `type:"liveForm"`**(报 `Cannot read properties of undefined (reading 'includes')`,modulecheck schema 有该枚举而 PreBuild 执行器没有)→ module.json5 注册已移除。启用路径:DevEco Studio GUI 工程 / 升级工具链 / API 26 工具链(compatibleSdkVersion 24)后加回注册。
 - **壁纸背景(2026-09-08 调研,未落地)**:①自定义壁纸双端可做(主工程 0.5d + 镜像 0.5d);②OH 系统壁纸:`@ohos.wallpaper.getFile(WALLPAPER_SYSTEM)` + `ohos.permission.GET_WALLPAPER`(需真机验证权限级别);③Android 14+(API 34+)官方禁止读系统壁纸 → 主工程只做自定义;④深浅压暗:浅 α≈0.30 / 深 α≈0.60,`BoxFit.cover`;⑤可选壁纸取色 → Monet keyColor。
 - 通知栏常驻倒计时(方案 B)未做:进程被杀后通知文本静止,卡片定时刷新兜底(可接受);若要"被杀也跳数字",评估 OH 长时任务白名单后再加。

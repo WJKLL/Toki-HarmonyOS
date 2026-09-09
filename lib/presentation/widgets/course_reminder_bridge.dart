@@ -11,11 +11,13 @@
 //   - 本桥自身零 Timer、零周期占用；跨周日次以当前周次近似（打开即重排修正）。
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/cards/course_card_sync.dart';
+import '../../core/live_view/live_view_course.dart';
+import '../../core/platform/contract/plat_live_view.dart';
 import '../../core/reminder/reminder_service.dart';
 import '../../domain/entities/class_period.dart';
 import '../../domain/entities/course.dart';
@@ -36,6 +38,16 @@ class CourseReminderBridge extends ConsumerStatefulWidget {
 class _CourseReminderBridgeState extends ConsumerState<CourseReminderBridge> {
   /// 首次 build 完成监听注册与初始排程（ref.listen 必须在 build 内调用）。
   bool _booted = false;
+
+  /// PLAT-03:实况窗边界 Timer —— 只在「节点切换时刻」触发一次后重排,
+  ///   不是周期轮询(保持本桥零周期占用的原设计)。
+  Timer? _liveViewTimer;
+
+  @override
+  void dispose() {
+    _liveViewTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -61,6 +73,9 @@ class _CourseReminderBridgeState extends ConsumerState<CourseReminderBridge> {
         if (!enabled) {
           unawaited(ReminderService.cancelAllAlarms());
           unawaited(ReminderService.stopCountdown());
+          // PLAT-03:关闭课程提醒 → 同时收起课程实况窗。
+          _liveViewTimer?.cancel();
+          unawaited(PlatLiveViewRegistry.instance.stop(LiveViewIds.course));
         } else {
           _scheduleCourseAlarms();
           _onCurrentClass(ref.read(currentClassProvider));
@@ -172,32 +187,155 @@ class _CourseReminderBridgeState extends ConsumerState<CourseReminderBridge> {
   void _onCurrentClass(CurrentClass? cur) {
     if (cur == null || cur.timeMissing) {
       unawaited(ReminderService.stopCountdown());
-      return;
+    } else {
+      final List<ClassPeriod> periods = ref
+          .read(appSettingsProvider)
+          .classPeriods;
+      final _Span? span = _spanOf(cur.course, periods);
+      if (span == null) {
+        unawaited(ReminderService.stopCountdown());
+      } else {
+        final DateTime now = DateTime.now();
+        final DateTime endAt = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          span.end ~/ 60,
+          span.end % 60,
+        );
+        unawaited(
+          ReminderService.startCountdown(
+            title: cur.course.name,
+            endText: '${cur.periodLabel} · ${cur.spanEndLabel} 结束',
+            endAtMillis: endAt.millisecondsSinceEpoch,
+            totalMinutes: cur.totalMinutes <= 0 ? 1 : cur.totalMinutes,
+          ),
+        );
+      }
     }
+    // PLAT-03:课程状态变化 → 同步实况窗,并排下一个节点边界。
+    unawaited(_applyLiveView());
+    _scheduleLiveViewBoundary();
+  }
+
+  // ── PLAT-03:课程实况窗(实况窗 = 实时层;常驻通知/桌面卡片为兜底)────
+
+  /// 组装实况窗输入(当前课优先;无当前课则用下一节课的课前窗口)。
+  LiveViewCourseInput? _liveViewInput() {
     final List<ClassPeriod> periods = ref
         .read(appSettingsProvider)
         .classPeriods;
-    final _Span? span = _spanOf(cur.course, periods);
-    if (span == null) {
-      unawaited(ReminderService.stopCountdown());
-      return;
+    if (periods.isEmpty) {
+      return null;
     }
     final DateTime now = DateTime.now();
-    final DateTime endAt = DateTime(
-      now.year,
-      now.month,
-      now.day,
-      span.end ~/ 60,
-      span.end % 60,
-    );
-    unawaited(
-      ReminderService.startCountdown(
-        title: cur.course.name,
-        endText: '${cur.periodLabel} · ${cur.spanEndLabel} 结束',
-        endAtMillis: endAt.millisecondsSinceEpoch,
-        totalMinutes: cur.totalMinutes <= 0 ? 1 : cur.totalMinutes,
-      ),
-    );
+    final CurrentClass? cur = ref.read(currentClassProvider);
+    final NextClass? next = ref.read(nextClassProvider);
+    final DateTime? nextStart = next == null
+        ? null
+        : _parseHhmm(now, next.startLabel);
+    if (cur != null && !cur.timeMissing) {
+      final _Span? span = _spanOf(cur.course, periods);
+      if (span != null) {
+        return LiveViewCourseInput(
+          courseName: cur.course.name,
+          startAt: _atToday(now, span.start),
+          endAt: _atToday(now, span.end),
+          room: cur.course.location,
+          periodLabel: cur.periodLabel,
+          nextCourseName: next?.course.name,
+          nextStartAt: nextStart,
+          nextRoom: next?.course.location,
+        );
+      }
+    }
+    if (next != null) {
+      final _Span? span = _spanOf(next.course, periods);
+      if (span != null) {
+        return LiveViewCourseInput(
+          courseName: next.course.name,
+          startAt: nextStart ?? now,
+          endAt: _atToday(now, span.end),
+          room: next.course.location,
+          periodLabel: next.periodLabel,
+        );
+      }
+    }
+    return null;
+  }
+
+  /// 计算并下发实况窗(spec 为 null → 收起)。
+  Future<void> _applyLiveView() async {
+    if (kIsWeb) {
+      return;
+    }
+    final PlatLiveView lv = PlatLiveViewRegistry.instance;
+    final LiveViewCourseInput? input = _liveViewInput();
+    final LiveViewSpec? spec = input == null
+        ? null
+        : LiveViewCourse.build(input);
+    if (spec == null) {
+      // 无课/不在窗口:仅当确实存在时才收起(避免无谓调用与 401 噪音)。
+      if (await lv.isActive(LiveViewIds.course)) {
+        final LiveViewOutcome r = await lv.stop(LiveViewIds.course);
+        if (!r.ok && !r.degraded) {
+          debugPrint('[LiveView] stop ${r.resultCode} ${r.message}');
+        }
+      }
+      return;
+    }
+    final bool active = await lv.isActive(LiveViewIds.course);
+    final LiveViewOutcome r = active
+        ? await lv.update(spec)
+        : await lv.start(spec);
+    if (!r.ok) {
+      debugPrint(
+        '[LiveView] ${active ? 'update' : 'start'} '
+        '${r.resultCode} ${r.message}${r.degraded ? ' (degraded)' : ''}',
+      );
+    }
+  }
+
+  /// 在下一个节点切换时刻排一次单次 Timer(上课/下课/课前窗口)。
+  void _scheduleLiveViewBoundary() {
+    _liveViewTimer?.cancel();
+    final LiveViewCourseInput? input = _liveViewInput();
+    if (input == null) {
+      return;
+    }
+    final DateTime? boundary = LiveViewCourse.nextBoundary(input);
+    if (boundary == null) {
+      return;
+    }
+    final Duration d = boundary.difference(DateTime.now());
+    if (d.isNegative) {
+      return;
+    }
+    _liveViewTimer = Timer(d + const Duration(seconds: 2), () {
+      if (!mounted) {
+        return;
+      }
+      unawaited(_applyLiveView());
+      _scheduleLiveViewBoundary();
+    });
+  }
+
+  DateTime _atToday(DateTime day, int minutes) => DateTime(
+    day.year,
+    day.month,
+    day.day,
+    minutes ~/ 60,
+    minutes % 60,
+  );
+
+  DateTime _parseHhmm(DateTime day, String s) {
+    final int idx = s.indexOf(':');
+    if (idx <= 0) {
+      return day;
+    }
+    final int h = int.tryParse(s.substring(0, idx)) ?? 0;
+    final int m = int.tryParse(s.substring(idx + 1)) ?? 0;
+    return DateTime(day.year, day.month, day.day, h, m);
   }
 }
 

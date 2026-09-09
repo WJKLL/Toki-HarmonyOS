@@ -29,6 +29,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/logging/log_export_service.dart';
 import '../../../core/reminder/reminder_service.dart';
+import '../../../core/live_view/live_view_course.dart';
+import '../../../core/platform/contract/plat_live_view.dart';
 import '../../../core/utils/u04_platform_utils.dart';
 import '../../../core/widgets/app_icons.dart';
 import '../../../core/widgets/c03_group_card.dart';
@@ -148,6 +150,34 @@ class _PageP0102SettingsPageState extends ConsumerState<PageP0102SettingsPage> {
     });
   }
 
+  /// 实况窗(LiveView Kit)诊断:能力 + 权益 + start/stop 全链路自检(PLAT-03)。
+  Future<void> _refreshLiveView() async {
+    final PlatLiveView lv = PlatLiveViewRegistry.instance;
+    final LiveViewProbe p = await lv.probe();
+    if (!mounted) return;
+    final StringBuffer sb = StringBuffer();
+    if (!p.supported) {
+      sb.write('设备不支持实况窗(缺少 LiveViewService)');
+    } else if (!p.enabled) {
+      sb.write('能力 ✓ 权益未开通 code=${p.code} ${p.message}'.trim());
+    } else {
+      sb.write('能力 ✓ 权益 ✓');
+      // 全链路自检:创建测试窗(id=99)→ 1.5s(避开 1s 节流)→ 结束。
+      final LiveViewOutcome s = await lv.start(LiveViewCourse.testSpec());
+      if (!mounted) return;
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      final LiveViewOutcome e = await lv.stop(99);
+      sb.write(
+        ' · start=${s.ok ? 'ok' : '${s.resultCode} ${s.message}'}'
+        ' · stop=${e.ok ? 'ok' : '${e.resultCode} ${e.message}'}',
+      );
+    }
+    if (!mounted) return;
+    setState(() => _liveViewText = sb.toString());
+    if (!mounted) return;
+    showMiniToast(context, _liveViewText);
+  }
+
   /// 打开应用详情（引导自启动/后台运行等）。
   void _openAppSettings() {
     unawaited(ReminderService.openAppSettings());
@@ -182,6 +212,9 @@ class _PageP0102SettingsPageState extends ConsumerState<PageP0102SettingsPage> {
 
   // ── v1.36.0（通知 · 开发者测试弹层显隐）──
   bool _reminderTestSheet = false;
+
+  // ── PLAT-03：实况窗诊断显示 ──
+  String _liveViewText = '点击查看';
 
   /// 导出日志 + 性能摘要到公共 Download/（原生 MediaStore）。
   Future<void> _exportLogs() async {
@@ -787,6 +820,15 @@ class _PageP0102SettingsPageState extends ConsumerState<PageP0102SettingsPage> {
             },
           ),
         ],
+        // PLAT-03：实况窗能力/权益诊断(与提醒开关无关,始终可查)。
+        const C03IndentDivider(),
+        MiuixArrowPreference(
+          key: const ValueKey('liveview.diag'),
+          title: '实况窗诊断(LiveView Kit)',
+          summary: _liveViewText,
+          insideMargin: _itemMargin,
+          onClick: () => unawaited(_refreshLiveView()),
+        ),
       ],
     );
   }
