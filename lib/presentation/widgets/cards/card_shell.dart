@@ -17,6 +17,8 @@ import 'package:flutter_miuix/miuix.dart';
 
 import '../../../core/utils/u04_platform_utils.dart';
 import '../../../core/widgets/card_dark_glow.dart';
+import '../../../core/widgets/glow_material.dart';
+import '../../../core/widgets/glow_tokens.dart';
 
 /// 首页卡片统一阴影壳(双层悬浮阴影 + 暗色高光)。
 /// [radius] 阴影形状圆角 —— 与内卡圆角对齐,避免阴影露出直角/缺角;
@@ -104,8 +106,16 @@ class CardShadow extends StatelessWidget {
       child: child,
     );
     // v1.44.x:暗色高光内建 —— CardDarkGlow 浅色透传(零开销),深色在
-    // 阴影 DecoratedBox 外侧叠 1px 白描边 + 微光晕(外投影 + 内描边分层)。
+    // 阴影 DecoratedBox 外侧叠微光晕(外投影 + 内描边分层)。
     if (!darkGlow) return shadowed;
-    return CardDarkGlow(radius: radius, child: shadowed);
+    // v1.50.x(GLOW-02 一期):叠一层**静态光感材质** ——
+    //   深色:多色边缘柔光 + 顶高光线;浅色:上缘白高光/下缘淡黑线 + 极淡彩色(srcOver)。
+    //   性能:纯 Canvas 绘制,**零额外模糊 pass**;shouldRepaint=false 静态零重绘。
+    //   深浅参数由 GlowMaterial 内部按 Miuix surface luminance 判定。
+    return GlowMaterial(
+      radius: radius,
+      level: GlowLevel.gentle,
+      child: CardDarkGlow(radius: radius, child: shadowed),
+    );
   }
 }

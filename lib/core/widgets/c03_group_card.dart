@@ -6,6 +6,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_miuix/miuix.dart';
 
 import 'card_dark_glow.dart';
+import 'glow_material.dart';
+import 'glow_tokens.dart';
 
 /// 设置页分组卡片：MiuixCard 包裹 [Column]，组内项之间用 MiuixHorizontalDivider 分隔。
 ///
@@ -27,15 +29,20 @@ class C03GroupCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
-      // 深色描边光晕(radius 与 MiuixCard 默认圆角 16 对齐;浅色直接透传)。
-      child: CardDarkGlow(
+      // GLOW-02:光感材质层(深浅自适应;浅色为极淡 srcOver 彩色 + 内高光/外阴影)。
+      // 深色描边光晕(radius 与 MiuixCard 默认圆角 16 对齐)。
+      child: GlowMaterial(
         radius: 16,
-        child: MiuixCard(
-          // MiuixCard 默认 insideMargin=zero，内边距由组内项自行控制。
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: children,
+        level: GlowLevel.gentle,
+        child: CardDarkGlow(
+          radius: 16,
+          child: MiuixCard(
+            // MiuixCard 默认 insideMargin=zero，内边距由组内项自行控制。
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            ),
           ),
         ),
       ),
