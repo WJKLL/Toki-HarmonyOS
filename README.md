@@ -47,7 +47,7 @@ pwsh ohos-flutter-api24.ps1 build hap --release --target-platform=ohos-arm64
 产物:`ohos/build/...`;**安装包(HAP)发布在 [Releases](https://github.com/WJKLL/Toki-HarmonyOS/releases)**。
 
 ## 演示
-HarmonyOS 适配版完整演示(2026-09-08):[GitHub 页面内播放](https://github.com/WJKLL/Toki/blob/main/docs/demo/9月8日.mp4) · [直接下载 MP4](https://github.com/WJKLL/Toki/raw/main/docs/demo/9月8日.mp4)(存于主仓库文档区)
+**完整操作演示(2026-09-09,含声音)**:[GitHub 页面内播放](https://github.com/WJKLL/Toki/blob/main/docs/demo/toki-demo-20260909.mp4) · [直接下载 MP4](https://github.com/WJKLL/Toki/raw/main/docs/demo/toki-demo-20260909.mp4)(存于主仓库文档区;HarmonyOS 版 UI 与主工程同源)
 
 ## 已知边界(详见 NATIVE_FEATURES.md §3)
 - 锁屏「通知实况窗」:API 24 仅系统应用(Live View Kit 属 API 26 预览);
