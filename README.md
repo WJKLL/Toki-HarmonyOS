@@ -17,6 +17,15 @@
 
 ## 更新日志
 
+### v1.51.5 · 2026-09-10
+**同步主项目共享修复 + 版本对齐**
+- 修复 `Course.periodLabel` 跨节末节号笔误:跨节分支原为 `第$start-$start节`(两处占位符都是 start),第 3 节起跨 2 节会显示「第3-3节」,应为「第3-4节」;影响课程提醒通知文本与倒计时卡(与主项目同源,主项目已于 v1.51.0 修复)。
+- 修复版本号滞留:`lib/core/constants/app_constants.dart` 的 appVersion `1.49.1` → `1.51.5`、buildNumber `153` → `166`(此前比 pubspec 的 1.50.3+160 还旧一截,「关于」页与导出的日志里版本号是错的)。
+- `pubspec` description 同步更名:Toki → 百工箱。
+- 说明:主项目 v1.51.0 ~ v1.51.5 的**桌面小组件(F-10 / S-26)为 Android 专属**(AppWidget + RemoteViews),鸿蒙侧以 **Form Kit 服务卡片**实现,不在本次同步范围。
+- ⚠️ **已知阻塞**:v1.50.3 把 bundleName 改为 `com.xiangjugong.xiangjugong` 后,`~/.ohos/config/*.p7b`(DevEco 自动签发的 provision profile)里绑定的仍是旧包名 `com.example.poc_ohos`,**HAP 构建会因签名与包名不匹配而失败** —— 需在 DevEco Studio 中重新生成自动签名(File → Project Structure → Signing Configs)。
+- 版本:`1.50.3+160` → `1.51.5+166`(大版本与主项目同步)。
+
 ### v1.50.3 · 2026-09-09
 **应用更名「百工箱」+ 包名正式化（备案）**
 - 原「Toki」在阿里云 App 备案未通过,按项目定位(Miuix 风格生活/换算工具箱)更名为**「百工箱」** —— 中文、简短、直白,含「工」呼应包名 `xiangjugong`。
